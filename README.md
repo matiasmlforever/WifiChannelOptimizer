@@ -149,7 +149,51 @@ python main.py --monitor --interval 60 --duration 3600
 
 ---
 
-## 🔧 Referencia de configuración (`.env`)
+## 🧠 Filosofía de diseño del optimizador
+
+Escanear frecuentemente y cambiar de canal con moderación no es una limitación — es una decisión de diseño deliberada basada en tres principios:
+
+### 1. Protección de la NVRAM del router
+
+Cada cambio de canal escribe en la **memoria flash** del router (NVRAM). Aunque los chips modernos soportan cientos de miles de ciclos de escritura, no tiene sentido desgastarlos innecesariamente.
+
+Con `CHANGE_COOLDOWN_SECONDS=3600`, en el peor escenario posible (un entorno RF que cambia constantemente durante las 24 horas), el router recibe **máximo 24 escrituras por día**. Eso es prácticamente nada — tu router vivirá muchos años sin problemas de memoria.
+
+El escaneo con `netsh`, en cambio, ocurre cada `SCAN_INTERVAL_SECONDS` y **no toca el router** — solo lee el espectro RF desde tu PC.
+
+### 2. Evitar el *flapping* (oscilación de canal)
+
+En redes, el **flapping** ocurre cuando un sistema salta del canal A al B, y luego vuelve al A casi de inmediato porque las condiciones fluctuaron levemente.
+
+```
+sin cooldown:  ch6 → ch11 → ch6 → ch11 → ch6  (cada 5 min)
+con cooldown:  ch6 ────────────────────── ch11  (solo si la mejora persiste 1h)
+```
+
+El cooldown de 1 hora le da tiempo al entorno para **estabilizarse**. Si el canal óptimo sigue siendo diferente al cabo de una hora, es porque hay una tendencia real de interferencia — no un ruido pasajero como alguien usando un dispositivo Bluetooth cerca o un microondas encendiéndose.
+
+El umbral del 40% (`HYSTERESIS_THRESHOLD`) refuerza esto: no basta con que otro canal sea *un poco* mejor, tiene que ser *dramáticamente* mejor para justificar el corte.
+
+### 3. Predictibilidad para el usuario
+
+Desde la perspectiva de quien usa la conexión, hay una diferencia enorme entre:
+
+- ❌ Cortes aleatorios de ~5 s cada 5–10 minutos (impredecible, arruina partidas)
+- ✅ Un corte de ~5 s **máximo una vez por hora** (manejable, esperable)
+
+Con la configuración por defecto, en el peor caso pierdes conexión **10 segundos, una vez por hora**. En la práctica, los canales cambian mucho menos seguido porque el entorno RF tiende a ser estable durante horas.
+
+### Resumen de la separación scan / change
+
+| Variable | Qué controla | Impacto |
+|---|---|---|
+| `SCAN_INTERVAL_SECONDS` | Frecuencia del escaneo RF | Solo CPU local, cero impacto en el router |
+| `CHANGE_COOLDOWN_SECONDS` | Frecuencia máxima de cambios al router | Protege NVRAM, evita flapping, da predictibilidad |
+| `HYSTERESIS_THRESHOLD` | Magnitud mínima de mejora para actuar | Filtra ruido y fluctuaciones momentáneas |
+
+---
+
+
 
 | Variable | Default | Descripción |
 |---|---|---|

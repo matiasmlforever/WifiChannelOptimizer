@@ -149,7 +149,51 @@ python main.py --monitor --interval 60 --duration 3600
 
 ---
 
-## 🔧 Configuration reference (`.env`)
+## 🧠 Optimizer design philosophy
+
+Scanning frequently and changing channels conservatively is not a limitation — it is a deliberate design decision based on three principles:
+
+### 1. NVRAM protection
+
+Every channel change writes to the router's **flash memory** (NVRAM). Although modern chips support hundreds of thousands of write cycles, there is no reason to wear them out unnecessarily.
+
+With `CHANGE_COOLDOWN_SECONDS=3600`, in the absolute worst case (an RF environment that shifts constantly for 24 hours straight), the router receives **at most 24 writes per day**. That is essentially nothing — your router will last many years without any memory issues.
+
+The `netsh` scan that happens every `SCAN_INTERVAL_SECONDS`, on the other hand, **never contacts the router** — it only reads the RF spectrum from your PC.
+
+### 2. Avoiding channel flapping
+
+In networking, **flapping** happens when a system jumps from channel A to B, then back to A almost immediately because conditions fluctuated slightly.
+
+```
+without cooldown:  ch6 → ch11 → ch6 → ch11 → ch6  (every 5 min)
+with cooldown:     ch6 ────────────────────── ch11  (only if the improvement persists for 1h)
+```
+
+The 1-hour cooldown gives the environment time to **stabilise**. If the optimal channel is still different after an hour, it reflects a genuine interference trend — not a transient spike caused by someone using a Bluetooth device nearby or a microwave turning on.
+
+The 40% hysteresis threshold (`HYSTERESIS_THRESHOLD`) reinforces this: another channel must be *dramatically* better, not just *marginally* better, to justify interrupting the radio.
+
+### 3. Predictability for the user
+
+From the perspective of someone using the connection, there is a big difference between:
+
+- ❌ Random ~5 s drops every 5–10 minutes (unpredictable, ruins matches)
+- ✅ A ~5 s drop **at most once per hour** (manageable, expected)
+
+With the default configuration, in the worst case you lose connectivity for **10 seconds, once per hour**. In practice, channels change far less frequently because the RF environment tends to be stable for hours at a time.
+
+### Scan / change separation at a glance
+
+| Variable | What it controls | Impact |
+|---|---|---|
+| `SCAN_INTERVAL_SECONDS` | RF scan frequency | Local CPU only — zero impact on the router |
+| `CHANGE_COOLDOWN_SECONDS` | Maximum rate of router changes | Protects NVRAM, prevents flapping, gives predictability |
+| `HYSTERESIS_THRESHOLD` | Minimum improvement magnitude to act | Filters noise and momentary fluctuations |
+
+---
+
+
 
 | Variable | Default | Description |
 |---|---|---|
