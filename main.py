@@ -5,7 +5,7 @@ All business logic lives in the wifi_optimizer/ package.
 This file is responsible only for:
   - Loading configuration from .env
   - Instantiating the correct router driver
-  - Running the daemon or single-shot loop
+  - Running the daemon, single-shot, or monitor loop
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 from wifi_optimizer.optimizer import run_optimization_cycle
+from wifi_optimizer.monitor   import run_monitor
 from wifi_optimizer.routers.huawei_hg8145x6 import HuaweiHG8145X6
 
 # ---------------------------------------------------------------------------
@@ -67,12 +68,17 @@ def _build_router():
     key = os.getenv("ROUTER_DRIVER", _DEFAULT_DRIVER).lower()
     cls = ROUTER_DRIVERS.get(key)
     if cls is None:
-        log.error(
-            "Unknown ROUTER_DRIVER '%s'. Available: %s",
-            key, list(ROUTER_DRIVERS),
-        )
+        log.error("Unknown ROUTER_DRIVER '%s'. Available: %s", key, list(ROUTER_DRIVERS))
         sys.exit(1)
     return cls(url=ROUTER_URL, username=ROUTER_USER, password=ROUTER_PASS)
+
+
+def _get_int_arg(args: list[str], flag: str, *, default: int | None) -> int | None:
+    """Return the integer value following `flag` in args, or `default`."""
+    try:
+        return int(args[args.index(flag) + 1])
+    except (ValueError, IndexError):
+        return default
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +89,17 @@ def main() -> None:
     dry_run = "--dry-run" in args
     headed  = "--inspect" in args
     once    = "--once"    in args or headed
+    monitor = "--monitor" in args
 
+    # ── Monitor mode — completely independent from the optimizer ──────────
+    # Checked BEFORE _build_router() so no router connection is attempted.
+    if monitor:
+        interval = _get_int_arg(args, "--interval", default=30)
+        duration = _get_int_arg(args, "--duration", default=None)
+        run_monitor(interval_seconds=interval, duration_seconds=duration)
+        return
+
+    # ── Optimizer mode ────────────────────────────────────────────────────
     if dry_run:
         log.info("DRY-RUN mode: router will NOT be modified.")
     if headed:
@@ -92,7 +108,6 @@ def main() -> None:
     router = _build_router()
     log.info("Router driver: %s  (%s)", router.__class__.__name__, router.url)
 
-    # Read current channels from the router to initialize hysteresis state
     state: dict = {"current_24": None, "current_5": None}
     if not dry_run:
         state["current_24"], state["current_5"] = router.read_channels()
@@ -114,7 +129,7 @@ def main() -> None:
     else:
         log.info(
             "Daemon mode started. Scan interval: %d s. Ctrl+C to stop. "
-            "Flags: --once | --dry-run | --inspect",
+            "Flags: --once | --dry-run | --inspect | --monitor",
             SCAN_INTERVAL_SECONDS,
         )
         while True:

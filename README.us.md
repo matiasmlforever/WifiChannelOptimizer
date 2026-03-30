@@ -26,6 +26,7 @@ Scans the surrounding RF spectrum, selects the least-congested channel for both 
 | **Gaming-aware quality monitoring** | Measures **gateway RTT + jitter** before and after every change |
 | **Auto-revert** | Reverts within 5 min if jitter or gateway ping degrade |
 | **Daemon mode** | Runs continuously, re-scanning every 5 minutes |
+| **RF Monitor mode** | Records Wi-Fi environment snapshots to SQLite for trend analysis |
 | **`.env` config** | All credentials and tuning parameters live outside the source code |
 
 ---
@@ -126,6 +127,12 @@ python main.py --once --dry-run
 
 # Inspect mode — opens a visible browser window for debugging selectors
 python main.py --inspect
+
+# Monitor mode — records RF snapshots to wifi_monitor.db every 30 s
+python main.py --monitor
+
+# Monitor with custom interval and duration
+python main.py --monitor --interval 60 --duration 3600
 ```
 
 ### CLI flags
@@ -136,6 +143,9 @@ python main.py --inspect
 | `--once` | Single optimization cycle and exit |
 | `--dry-run` | Full cycle (scan + score + ping) but **no router changes** |
 | `--inspect` | Opens Chromium in headed mode + dumps diagnostic HTML files |
+| `--monitor` | Observatory mode — records RF snapshots to `wifi_monitor.db` |
+| `--interval N` | (with `--monitor`) Seconds between scans. Default: `30` |
+| `--duration N` | (with `--monitor`) Stop after N seconds. Default: unlimited |
 
 ---
 
@@ -203,6 +213,7 @@ WifiChannelOptimizer/
 │   ├── decision.py                # Phase 2: congestion scoring, hysteresis, channel selection
 │   ├── quality.py                 # Gaming metrics: gateway RTT, jitter, download speed
 │   ├── optimizer.py               # Core cycle: ties scanner + decision + quality + router together
+│   ├── monitor.py                 # Observatory mode: records RF snapshots to SQLite
 │   └── routers/
 │       ├── base.py                # BaseRouter ABC — the contract every driver must implement
 │       └── huawei_hg8145x6.py    # Concrete driver for Huawei HG8145X6 (Entel, Chile)
@@ -213,7 +224,65 @@ WifiChannelOptimizer/
 ├── .gitignore
 ├── README.md                      # Versión en Español (primary)
 ├── README.us.md                   # This file (English)
-└── wifi_optimizer.log             # Runtime log (git-ignored)
+├── wifi_optimizer.log             # Runtime log (git-ignored)
+└── wifi_monitor.db                # RF monitor database (git-ignored)
+```
+
+---
+
+## 📡 RF Monitor mode
+
+The monitor mode is completely independent from the optimizer — **it does not touch the router, requires no credentials, and makes no changes**. It only scans and records.
+
+### When to use it
+
+- To **understand your RF environment** before enabling the optimizer
+- To detect **time-of-day congestion patterns** (do neighbours saturate channel 6 at night?)
+- To **validate** that a manual or automatic channel change had a real effect
+- To keep **historical evidence** when troubleshooting connectivity issues
+
+### SQLite database (`wifi_monitor.db`)
+
+Table `snapshots`:
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER | Auto-increment PK |
+| `ts` | TEXT | ISO-8601 UTC timestamp |
+| `ssid` | TEXT | Network name |
+| `bssid` | TEXT | Access point MAC address |
+| `channel` | INTEGER | Wi-Fi channel |
+| `band` | TEXT | `'2.4'` or `'5'` |
+| `signal_pct` | INTEGER | Signal in % (raw netsh value) |
+| `signal_dbm` | REAL | Signal in dBm (`pct/2 - 100`) |
+
+### Query examples
+
+```python
+import sqlite3
+import pandas as pd
+
+con = sqlite3.connect("wifi_monitor.db")
+df  = pd.read_sql("SELECT * FROM snapshots", con, parse_dates=["ts"])
+
+# Average congestion per channel
+df.groupby(["channel", "band"])["signal_dbm"].mean()
+
+# Signal strength of a specific network over time
+df[df["ssid"] == "MyNeighbour"].set_index("ts")["signal_dbm"].plot()
+
+# Hour of day with the most active networks
+df["hour"] = df["ts"].dt.hour
+df.groupby("hour")["bssid"].nunique().plot(kind="bar", title="Unique networks per hour")
+```
+
+```sql
+-- Top 5 most congested channels (average dBm)
+SELECT channel, band, COUNT(*) as scans, AVG(signal_dbm) as avg_dbm
+FROM snapshots
+GROUP BY channel, band
+ORDER BY avg_dbm ASC
+LIMIT 5;
 ```
 
 ---
