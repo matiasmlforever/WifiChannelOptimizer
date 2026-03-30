@@ -92,7 +92,7 @@ def main() -> None:
     router = _build_router()
     log.info("Router driver: %s  (%s)", router.__class__.__name__, router.url)
 
-    # Read current channels from the router to initialise hysteresis state
+    # Read current channels from the router to initialize hysteresis state
     state: dict = {"current_24": None, "current_5": None}
     if not dry_run:
         state["current_24"], state["current_5"] = router.read_channels()
