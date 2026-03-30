@@ -1,0 +1,55 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# uv
+.uv/
+uv.lock
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Playwright
+playwright/.auth/
+test-results/
+playwright-report/
+
+# Logs & runtime output del proyecto
+*.log
+wifi_optimizer.log
+
+# HTML dumps de diagnóstico (generados por --inspect)
+router_login_page.html
+router_post_login.html
+router_wlan24.html
+router_wlan5.html
+
+# IDEs
+.idea/
+.vscode/
+*.iml
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Credenciales (por si se extraen a un .env)
+.env
+*.env
+secrets.py
