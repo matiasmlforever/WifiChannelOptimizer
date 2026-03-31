@@ -27,6 +27,7 @@ Escanea el espectro de RF del entorno, selecciona el canal con menor congestión
 | **Reversión automática** | Revierte en 5 min si el jitter o el ping al gateway empeoran |
 | **Modo daemon** | Escaneo continuo cada 5 minutos |
 | **Modo monitor RF** | Registra snapshots del entorno Wi-Fi en SQLite para análisis de tendencias |
+| **Análisis de ventanas** | Detecta las horas menos congestionadas y las escribe en `optimal_windows.json` |
 | **Configuración por `.env`** | Credenciales y parámetros fuera del código fuente |
 
 ---
@@ -116,23 +117,30 @@ ROUTER_PASS=TU_CONTRASEÑA_DEL_ROUTER
 ## 🚀 Uso
 
 ```bash
-# Ejecutar una vez (escanear + decidir + aplicar)
-python main.py --once
+# ── Flujo recomendado de 3 pasos ──────────────────────────────────────────
 
-# Modo daemon — re-escanea cada 5 minutos (por defecto)
-python main.py
+# Paso 1 — Acumular datos del entorno RF (sin tocar el router)
+python main.py --monitor --interval 30          # indefinido
+python main.py --monitor --interval 30 --duration 86400  # 24 horas
+
+# Paso 2 — Analizar y generar ventanas óptimas
+python main.py --analyze                        # UTC-3 (Chile), top 8 horas
+python main.py --analyze --tz-offset -3 --top-n 6  # personalizado
+
+# Paso 3 — Ejecutar el optimizer (respetará optimal_windows.json si existe)
+python main.py                                  # daemon
+python main.py --once                           # una vez
+
+# ── Otros modos ───────────────────────────────────────────────────────────
+
+# Sin restricción de ventana: borrar el archivo generado
+# del optimal_windows.json
 
 # Dry run — ciclo completo sin tocar el router
 python main.py --once --dry-run
 
 # Modo inspect — abre el navegador visible para depurar selectores
 python main.py --inspect
-
-# Modo monitor — registra el entorno RF en wifi_monitor.db cada 30 s
-python main.py --monitor
-
-# Monitor con intervalo y duración personalizados
-python main.py --monitor --interval 60 --duration 3600
 ```
 
 ### Flags disponibles
@@ -146,6 +154,9 @@ python main.py --monitor --interval 60 --duration 3600
 | `--monitor` | Modo observatorio — registra snapshots RF en `wifi_monitor.db` |
 | `--interval N` | (con `--monitor`) Segundos entre scans. Default: `30` |
 | `--duration N` | (con `--monitor`) Detener tras N segundos. Default: ilimitado |
+| `--analyze` | Lee `wifi_monitor.db` y escribe las ventanas óptimas en `optimal_windows.json` |
+| `--tz-offset N` | (con `--analyze`) Offset UTC en horas. Default: `-3` (Chile) |
+| `--top-n N` | (con `--analyze`) Cantidad de horas óptimas a incluir. Default: `8` |
 
 ---
 
@@ -260,9 +271,11 @@ WifiChannelOptimizer/
 │   ├── quality.py                 # Métricas gaming: RTT al gateway, jitter, velocidad
 │   ├── optimizer.py               # Ciclo principal: orquesta las 3 fases + driver del router
 │   ├── monitor.py                 # Modo observatorio: registra snapshots RF en SQLite
+│   ├── analyzer.py                # Análisis de ventanas: lee DB, escribe optimal_windows.json
 │   └── routers/
 │       ├── base.py                # BaseRouter ABC — contrato que todo driver debe implementar
 │       └── huawei_hg8145x6.py    # Driver concreto para Huawei HG8145X6 (Entel, Chile)
+├── analyze_windows.py             # Wrapper standalone para --analyze
 ├── .env.example                   # Plantilla de configuración — copiar a .env y completar
 ├── .env                           # Credenciales locales (ignorado por git)
 ├── pyproject.toml                 # Metadatos del proyecto y dependencias
@@ -271,8 +284,64 @@ WifiChannelOptimizer/
 ├── README.md                      # Este archivo (Español)
 ├── README.us.md                   # English version
 ├── wifi_optimizer.log             # Log de ejecución (ignorado por git)
-└── wifi_monitor.db                # Base de datos del monitor RF (ignorado por git)
+├── wifi_monitor.db                # Base de datos del monitor RF (ignorado por git)
+└── optimal_windows.json           # Ventanas horarias óptimas generadas por --analyze (ignorado por git)
 ```
+
+---
+
+## 🔄 Flujo completo: monitor → analizar → optimizar
+
+Este es el flujo recomendado para minimizar los cambios al router ejecutando el optimizer **solo cuando el entorno RF favorece el cambio**.
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌──────────────────────┐
+│  --monitor      │────▶│  --analyze       │────▶│  (daemon / --once)   │
+│                 │     │                  │     │                      │
+│  wifi_monitor   │     │  lee la DB       │     │  si existe           │
+│  .db            │     │  escribe         │     │  optimal_windows     │
+│  (SQLite)       │     │  optimal_windows │     │  .json → solo actúa  │
+│                 │     │  .json           │     │  en esas horas       │
+└─────────────────┘     └──────────────────┘     └──────────────────────┘
+```
+
+### Paso 1 — Acumular datos (24–48 h mínimo recomendado)
+
+```bash
+python main.py --monitor --interval 30
+```
+
+Cuantos más días de datos, más representativo el análisis. Sin datos de fines de semana o días laborales no hay un patrón completo.
+
+### Paso 2 — Analizar y generar ventanas
+
+```bash
+python main.py --analyze --tz-offset -3 --top-n 8
+```
+
+Genera `optimal_windows.json` con las 8 horas menos congestionadas. El archivo incluye el ranking completo de las 24 horas con scores por banda.
+
+### Paso 3 — Ejecutar el optimizer
+
+```bash
+python main.py          # daemon — escanea siempre, actúa solo en ventanas óptimas
+```
+
+Si `optimal_windows.json` existe, el optimizer lo lee en cada ciclo. Si la hora actual no está en la lista, el ciclo termina sin tocar el router:
+
+```
+[INFO] Outside optimal window (current hour: 03:00, optimal hours: 12:00, 13:00, ...). Next window: 12:00. Skipping.
+[INFO] Within optimal window (15:00 ✅). Proceeding with cycle.
+```
+
+### Desactivar la restricción de ventana
+
+```bash
+del optimal_windows.json    # Windows
+rm optimal_windows.json     # macOS/Linux
+```
+
+Sin el archivo, el optimizer actúa en cualquier hora (comportamiento original).
 
 ---
 

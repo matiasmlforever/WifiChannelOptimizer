@@ -21,6 +21,7 @@ load_dotenv(Path(__file__).parent / ".env")
 
 from wifi_optimizer.optimizer import run_optimization_cycle
 from wifi_optimizer.monitor import run_monitor
+from wifi_optimizer.analyzer import run_analyze
 from wifi_optimizer.routers.huawei_hg8145x6 import HuaweiHG8145X6
 
 # ---------------------------------------------------------------------------
@@ -111,6 +112,7 @@ def main() -> None:
     headed  = "--inspect" in args
     once    = "--once"    in args or headed
     monitor = "--monitor" in args
+    analyze = "--analyze" in args
 
     # ── Monitor mode — completely independent from the optimizer ──────────
     # Checked BEFORE _build_router() so no router connection is attempted.
@@ -118,6 +120,13 @@ def main() -> None:
         interval = _get_int_arg(args, "--interval", default=30)
         duration = _get_int_arg(args, "--duration", default=None)
         run_monitor(interval_seconds=interval, duration_seconds=duration)
+        return
+
+    # ── Analyze mode — reads DB, writes optimal_windows.json ──────────────
+    if analyze:
+        tz_offset = _get_int_arg(args, "--tz-offset", default=-3)
+        top_n     = _get_int_arg(args, "--top-n",     default=8)
+        run_analyze(tz_offset=tz_offset, top_n=top_n)
         return
 
     # ── Optimizer mode ────────────────────────────────────────────────────

@@ -27,6 +27,7 @@ Scans the surrounding RF spectrum, selects the least-congested channel for both 
 | **Auto-revert** | Reverts within 5 min if jitter or gateway ping degrade |
 | **Daemon mode** | Runs continuously, re-scanning every 5 minutes |
 | **RF Monitor mode** | Records Wi-Fi environment snapshots to SQLite for trend analysis |
+| **Window analysis** | Detects least-congested hours and writes them to `optimal_windows.json` |
 | **`.env` config** | All credentials and tuning parameters live outside the source code |
 
 ---
@@ -116,23 +117,30 @@ ROUTER_PASS=YOUR_ROUTER_PASSWORD
 ## 🚀 Usage
 
 ```bash
-# Run once (scan + decide + apply)
-python main.py --once
+# ── Recommended 3-step flow ───────────────────────────────────────────────
 
-# Daemon mode — re-scans every 5 minutes (default)
-python main.py
+# Step 1 — Accumulate RF environment data (no router contact)
+python main.py --monitor --interval 30          # unlimited
+python main.py --monitor --interval 30 --duration 86400  # 24 hours
+
+# Step 2 — Analyse and generate optimal windows
+python main.py --analyze                        # UTC-3 (Chile), top 8 hours
+python main.py --analyze --tz-offset -3 --top-n 6  # customised
+
+# Step 3 — Run the optimizer (respects optimal_windows.json if present)
+python main.py                                  # daemon
+python main.py --once                           # single shot
+
+# ── Other modes ───────────────────────────────────────────────────────────
+
+# Disable window restriction: delete the generated file
+# del optimal_windows.json
 
 # Dry run — full cycle without touching the router
 python main.py --once --dry-run
 
 # Inspect mode — opens a visible browser window for debugging selectors
 python main.py --inspect
-
-# Monitor mode — records RF snapshots to wifi_monitor.db every 30 s
-python main.py --monitor
-
-# Monitor with custom interval and duration
-python main.py --monitor --interval 60 --duration 3600
 ```
 
 ### CLI flags
@@ -146,6 +154,9 @@ python main.py --monitor --interval 60 --duration 3600
 | `--monitor` | Observatory mode — records RF snapshots to `wifi_monitor.db` |
 | `--interval N` | (with `--monitor`) Seconds between scans. Default: `30` |
 | `--duration N` | (with `--monitor`) Stop after N seconds. Default: unlimited |
+| `--analyze` | Reads `wifi_monitor.db` and writes optimal windows to `optimal_windows.json` |
+| `--tz-offset N` | (with `--analyze`) UTC offset in hours. Default: `-3` (Chile) |
+| `--top-n N` | (with `--analyze`) Number of optimal hours to include. Default: `8` |
 
 ---
 

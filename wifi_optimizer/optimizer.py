@@ -7,11 +7,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime
+from pathlib import Path
 
 from .scanner  import scan_wifi_networks
 from .decision import best_channel, log_interference_heatmap
 from .quality  import measure_quality, quality_degraded
+from .analyzer import load_optimal_hours, WINDOWS_PATH
 from .routers.base import BaseRouter
 
 log = logging.getLogger(__name__)
@@ -29,9 +31,12 @@ def run_optimization_cycle(
     speed_drop_pct:        float = 0.40,
     hysteresis_threshold:  float = 0.40,
     change_cooldown_seconds: int = 3600,
+    optimal_windows_path: Path  = WINDOWS_PATH,
 ) -> None:
     """
     One full optimization cycle:
+      0. Check optimal window — if optimal_windows.json exists and the current
+         hour is outside the allowed windows, skip the cycle entirely
       1. Scan the RF environment (always — cheap, uses only netsh)
       2. Check change cooldown — skip router interaction if last change
          was less than change_cooldown_seconds ago
@@ -48,6 +53,28 @@ def run_optimization_cycle(
     """
     log.info("─" * 60)
     log.info("Optimization cycle started — %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    # Step 0 — Optimal window check (optional — only when file exists)
+    optimal_hours = load_optimal_hours(optimal_windows_path)
+    if optimal_hours is not None:
+        current_hour = datetime.now().hour
+        if current_hour not in optimal_hours:
+            next_window = next(
+                (h for h in sorted(optimal_hours) if h > current_hour),
+                sorted(optimal_hours)[0],   # wraps to next day
+            )
+            log.info(
+                "Outside optimal window (current hour: %02d:00, "
+                "optimal hours: %s). Next window: %02d:00. Skipping.",
+                current_hour,
+                ", ".join(f"{h:02d}:00" for h in sorted(optimal_hours)),
+                next_window,
+            )
+            return
+        log.info(
+            "Within optimal window (%02d:00 ✅). Proceeding with cycle.",
+            current_hour,
+        )
 
     # Step 1 — RF scan (no router interaction)
     networks = scan_wifi_networks()
