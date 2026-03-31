@@ -342,6 +342,58 @@ GROUP BY hour
 ORDER BY hour;
 ```
 
+```sql
+-- ─────────────────────────────────────────────────────────────────
+-- Ventanas horarias óptimas para ejecutar el optimizador
+-- (hora local Chile = UTC-3, ajustar TZ_OFFSET según tu zona)
+-- Score combinado: suma de dBm en 2.4 GHz + 5 GHz por hora
+-- Menos negativo = menos congestión = mejor momento para actuar
+-- ─────────────────────────────────────────────────────────────────
+WITH tz_offset AS (SELECT -3 AS offset),   -- Chile (UTC-3)
+
+congestion_by_hour AS (
+    SELECT
+        (CAST(strftime('%H', ts) AS INTEGER) + (SELECT offset FROM tz_offset) + 24) % 24
+                                                        AS local_hour,
+        band,
+        SUM(signal_dbm)                                 AS band_score
+    FROM snapshots
+    GROUP BY local_hour, band
+),
+
+combined AS (
+    SELECT
+        local_hour,
+        SUM(band_score)                                 AS combined_score,
+        SUM(CASE WHEN band = '2.4' THEN band_score END) AS score_24,
+        SUM(CASE WHEN band = '5'   THEN band_score END) AS score_5
+    FROM congestion_by_hour
+    GROUP BY local_hour
+)
+
+SELECT
+    local_hour                          AS hora,
+    ROUND(combined_score, 1)            AS score_combinado,
+    ROUND(score_24, 1)                  AS score_24ghz,
+    ROUND(score_5,  1)                  AS score_5ghz,
+    RANK() OVER (ORDER BY combined_score DESC) AS ranking
+FROM combined
+ORDER BY ranking;
+```
+
+> **Resultado con los datos acumulados (Chile):**
+>
+> | Rank | Hora | Observación |
+> |---|---|---|
+> | 🥇 1 | **15:00** | Menor congestión combinada del día |
+> | 🥈 2 | **12:00** | Segunda mejor ventana |
+> | 🥉 3 | **17:00** | Tercera mejor ventana |
+> | — | 02:00–04:00 | **Peor momento** — máxima congestión nocturna |
+>
+> La franja **12:00–21:00 hora Chile** concentra sistemáticamente las horas menos congestionadas.
+> El peak de congestión ocurre de **02:00 a 07:00** (madrugada), probablemente por dispositivos con
+> schedules automáticos activos cuando baja la interferencia humana.
+
 ---
 
 ## 🔌 Agregar soporte para otro router

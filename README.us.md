@@ -342,6 +342,58 @@ GROUP BY hour
 ORDER BY hour;
 ```
 
+```sql
+-- ─────────────────────────────────────────────────────────────────
+-- Optimal hourly windows to run the optimizer
+-- (local time = UTC + TZ_OFFSET; adjust offset for your timezone)
+-- Combined score: sum of dBm across 2.4 GHz + 5 GHz per hour
+-- Less negative = less congestion = better time to act
+-- ─────────────────────────────────────────────────────────────────
+WITH tz_offset AS (SELECT -3 AS offset),   -- Chile (UTC-3); change as needed
+
+congestion_by_hour AS (
+    SELECT
+        (CAST(strftime('%H', ts) AS INTEGER) + (SELECT offset FROM tz_offset) + 24) % 24
+                                                        AS local_hour,
+        band,
+        SUM(signal_dbm)                                 AS band_score
+    FROM snapshots
+    GROUP BY local_hour, band
+),
+
+combined AS (
+    SELECT
+        local_hour,
+        SUM(band_score)                                 AS combined_score,
+        SUM(CASE WHEN band = '2.4' THEN band_score END) AS score_24,
+        SUM(CASE WHEN band = '5'   THEN band_score END) AS score_5
+    FROM congestion_by_hour
+    GROUP BY local_hour
+)
+
+SELECT
+    local_hour                          AS hour,
+    ROUND(combined_score, 1)            AS combined_score,
+    ROUND(score_24, 1)                  AS score_24ghz,
+    ROUND(score_5,  1)                  AS score_5ghz,
+    RANK() OVER (ORDER BY combined_score DESC) AS ranking
+FROM combined
+ORDER BY ranking;
+```
+
+> **Results from accumulated data (Chile):**
+>
+> | Rank | Hour | Note |
+> |---|---|---|
+> | 🥇 1 | **15:00** | Lowest combined congestion of the day |
+> | 🥈 2 | **12:00** | Second best window |
+> | 🥉 3 | **17:00** | Third best window |
+> | — | 02:00–04:00 | **Worst time** — peak overnight congestion |
+>
+> The **12:00–21:00 Chile** window consistently shows the least congested hours.
+> The congestion peak occurs between **02:00 and 07:00** (overnight), likely due to
+> devices with automated schedules that activate when human-generated interference drops.
+
 ---
 
 ## 🔌 Adding a new router model
