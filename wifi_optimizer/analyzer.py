@@ -1,4 +1,4 @@
-﻿"""
+"""
 wifi_optimizer/analyzer.py
 
 RF Window Analyzer — reads wifi_monitor.db, identifies the MOST-congested
@@ -76,6 +76,20 @@ def run_analyze(
         log.error(
             "Database not found: %s — run '--monitor' first to collect data.",
             db_path,
+        )
+        return
+
+    if not (1 <= top_n <= 24):
+        log.error(
+            "Invalid top_n=%d — must be between 1 and 24 (hours in a day).",
+            top_n,
+        )
+        return
+
+    if not (-23 <= tz_offset <= 23):
+        log.error(
+            "Invalid tz_offset=%d — must be between -23 and +23.",
+            tz_offset,
         )
         return
 

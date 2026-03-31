@@ -1,4 +1,4 @@
-﻿"""
+"""
 analyze_windows.py — standalone convenience wrapper.
 Prefer: python main.py --analyze [--tz-offset -3] [--top-n 8]
 """

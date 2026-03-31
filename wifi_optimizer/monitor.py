@@ -80,11 +80,29 @@ def run_monitor(
     Args:
         interval_seconds: How often to scan and persist (default: 30 s).
         duration_seconds: Stop after this many seconds. None = run forever.
+                          0 is accepted and means "stop immediately after setup".
         db_path:          Path to the SQLite database file.
     """
+    # Validate inputs before touching the DB or starting the loop
+    if interval_seconds < 1:
+        log.error(
+            "Invalid interval_seconds=%d — must be >= 1. Aborting monitor.",
+            interval_seconds,
+        )
+        return
+    if duration_seconds is not None and duration_seconds < 0:
+        log.error(
+            "Invalid duration_seconds=%d — must be >= 0 (or None for unlimited). "
+            "Aborting monitor.",
+            duration_seconds,
+        )
+        return
+
     _init_db(db_path)
 
-    deadline = (time.monotonic() + duration_seconds) if duration_seconds else None
+    # Use 'is not None' so duration_seconds=0 is treated as an immediate stop,
+    # not as "unlimited" (which a falsy check would do).
+    deadline = (time.monotonic() + duration_seconds) if duration_seconds is not None else None
     total_snapshots = 0
     scan_count = 0
 
@@ -105,7 +123,7 @@ def run_monitor(
     signal.signal(signal.SIGINT, _sigint)
 
     while not _stop[0]:
-        if deadline and time.monotonic() >= deadline:
+        if deadline is not None and time.monotonic() >= deadline:
             log.info("Duration reached. Stopping monitor.")
             break
 
@@ -127,7 +145,7 @@ def run_monitor(
         # Sleep in short chunks so Ctrl+C is responsive
         sleep_end = time.monotonic() + interval_seconds
         while not _stop[0] and time.monotonic() < sleep_end:
-            if deadline and time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 break
             time.sleep(0.5)
 

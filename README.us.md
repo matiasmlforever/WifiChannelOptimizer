@@ -27,7 +27,7 @@ Scans the surrounding RF spectrum, selects the least-congested channel for both 
 | **Auto-revert** | Reverts within 5 min if jitter or gateway ping degrade |
 | **Daemon mode** | Runs continuously, re-scanning every 5 minutes |
 | **RF Monitor mode** | Records Wi-Fi environment snapshots to SQLite for trend analysis |
-| **Window analysis** | Detects least-congested hours and writes them to `optimal_windows.json` |
+| **Window analysis** | Detects most-congested hours (high-interference windows) and writes them to `optimal_windows.json` |
 | **`.env` config** | All credentials and tuning parameters live outside the source code |
 
 ---

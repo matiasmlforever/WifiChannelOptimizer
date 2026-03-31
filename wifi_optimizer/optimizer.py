@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .scanner  import scan_wifi_networks
@@ -64,22 +64,27 @@ def run_optimization_cycle(
       4.  Apply + launch revert monitor
 
     state keys:
-        current_24 (int|None)          — active 2.4 GHz channel
-        current_5  (int|None)          — active 5 GHz channel
-        last_change_ts (float)         — monotonic ts of last router change
+        current_24 (int|None)            — active 2.4 GHz channel
+        current_5  (int|None)            — active 5 GHz channel
+        last_change_ts (float)           — monotonic ts of last normal change
         last_emergency_change_ts (float) — monotonic ts of last emergency change
+        lock (threading.Lock)            — guards all state reads/writes
     """
     log.info("─" * 60)
-    log.info("Optimization cycle started — %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    log.info(
+        "Optimization cycle started — %s",
+        datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    )
+
+    lock: threading.Lock = state.setdefault("lock", threading.Lock())
 
     # Step 0 — Determine operating mode
-    optimal_hours = load_optimal_hours(optimal_windows_path)
+    optimal_hours  = load_optimal_hours(optimal_windows_path)
     emergency_mode = False
 
     if optimal_hours is not None:
         current_hour = datetime.now().hour
         if current_hour not in optimal_hours:
-            # Outside high-congestion window → switch to emergency mode
             emergency_mode = True
             log.info(
                 "Outside optimal window (%02d:00) — EMERGENCY mode active. "
@@ -102,12 +107,13 @@ def run_optimization_cycle(
     log_interference_heatmap(networks)
 
     # Step 2 — Cooldown check (uses separate tracker in emergency mode)
-    if emergency_mode:
-        last_change = state.get("last_emergency_change_ts", 0.0)
-        cooldown    = emergency_cooldown_seconds
-    else:
-        last_change = state.get("last_change_ts", 0.0)
-        cooldown    = change_cooldown_seconds
+    with lock:
+        if emergency_mode:
+            last_change = state.get("last_emergency_change_ts", 0.0)
+            cooldown    = emergency_cooldown_seconds
+        else:
+            last_change = state.get("last_change_ts", 0.0)
+            cooldown    = change_cooldown_seconds
 
     elapsed   = time.monotonic() - last_change
     remaining = cooldown - elapsed
@@ -132,7 +138,6 @@ def run_optimization_cycle(
     )
 
     if emergency_mode:
-        # Emergency: only act if signal is SEVERELY degraded
         if ping_now <= emergency_ping_ms and jitter_now <= emergency_jitter_ms:
             log.info(
                 "Emergency mode — signal acceptable "
@@ -149,7 +154,6 @@ def run_optimization_cycle(
         )
         active_hysteresis = emergency_hysteresis
     else:
-        # Normal: skip if connection is already good
         if ping_now <= baseline_good_ping_ms and jitter_now <= baseline_good_jitter_ms:
             log.info(
                 "Baseline already good (ping %.1f ms ≤ %d ms, "
@@ -161,12 +165,16 @@ def run_optimization_cycle(
         active_hysteresis = hysteresis_threshold
 
     # Step 3 — Scoring and decision
+    with lock:
+        cur_24 = state["current_24"]
+        cur_5  = state["current_5"]
+
     best_24, change_24 = best_channel(
-        networks, "2.4", state["current_24"],
+        networks, "2.4", cur_24,
         hysteresis_threshold=active_hysteresis,
     )
     best_5, change_5 = best_channel(
-        networks, "5", state["current_5"],
+        networks, "5", cur_5,
         hysteresis_threshold=active_hysteresis,
     )
 
@@ -177,8 +185,9 @@ def run_optimization_cycle(
         log.info("Already on optimal channels (or within hysteresis). No changes.")
         return
 
-    # baseline already measured in Step 2.5
-    prev_24, prev_5 = state["current_24"], state["current_5"]
+    with lock:
+        prev_24 = state["current_24"]
+        prev_5  = state["current_5"]
 
     if dry_run:
         log.info(
@@ -191,15 +200,15 @@ def run_optimization_cycle(
     # Step 5 — Apply
     router.apply_channels(apply_24, apply_5, headed=headed)
     ts_now = time.monotonic()
-    if emergency_mode:
-        state["last_emergency_change_ts"] = ts_now
-    else:
-        state["last_change_ts"] = ts_now
-
-    if apply_24:
-        state["current_24"] = apply_24
-    if apply_5:
-        state["current_5"] = apply_5
+    with lock:
+        if emergency_mode:
+            state["last_emergency_change_ts"] = ts_now
+        else:
+            state["last_change_ts"] = ts_now
+        if apply_24:
+            state["current_24"] = apply_24
+        if apply_5:
+            state["current_5"] = apply_5
 
     log.info(
         "Channels applied → 2.4 GHz: ch%s | 5 GHz: ch%s",
@@ -212,13 +221,15 @@ def run_optimization_cycle(
         kwargs=dict(
             router=router,
             prev_24=prev_24, prev_5=prev_5,
-            new_24=apply_24,  new_5=apply_5,
+            new_24=apply_24, new_5=apply_5,
             baseline=baseline,
             trial_seconds=trial_period_seconds,
             ping_threshold_ms=ping_threshold_ms,
             jitter_threshold_ms=jitter_threshold_ms,
             speed_drop_pct=speed_drop_pct,
             state=state,
+            lock=lock,
+            emergency_mode=emergency_mode,
         ),
         daemon=True,
         name="monitor-revert",
@@ -235,6 +246,8 @@ def _monitor_and_revert(
     jitter_threshold_ms: int,
     speed_drop_pct:      float,
     state:               dict,
+    lock:                threading.Lock,
+    emergency_mode:      bool,
 ) -> None:
     log.info("Trial period started (%d min). Monitoring quality…", trial_seconds // 60)
     time.sleep(trial_seconds)
@@ -253,12 +266,19 @@ def _monitor_and_revert(
             new_24, prev_24, new_5, prev_5,
         )
         router.apply_channels(prev_24, prev_5)
-        # Reset cooldown so a revert doesn't block immediate re-evaluation
-        state["last_change_ts"] = 0.0
-        if prev_24 is not None:
-            state["current_24"] = prev_24
-        if prev_5 is not None:
-            state["current_5"] = prev_5
+        # Reset the matching cooldown tracker so a revert doesn't block
+        # immediate re-evaluation.  Emergency changes must reset the
+        # emergency tracker — not the normal one — to avoid cross-mode
+        # interference.
+        with lock:
+            if emergency_mode:
+                state["last_emergency_change_ts"] = 0.0
+            else:
+                state["last_change_ts"] = 0.0
+            if prev_24 is not None:
+                state["current_24"] = prev_24
+            if prev_5 is not None:
+                state["current_5"] = prev_5
         log.info("Revert complete.")
     else:
         log.info(

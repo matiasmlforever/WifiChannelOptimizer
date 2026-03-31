@@ -27,7 +27,7 @@ Escanea el espectro de RF del entorno, selecciona el canal con menor congestión
 | **Reversión automática** | Revierte en 5 min si el jitter o el ping al gateway empeoran |
 | **Modo daemon** | Escaneo continuo cada 5 minutos |
 | **Modo monitor RF** | Registra snapshots del entorno Wi-Fi en SQLite para análisis de tendencias |
-| **Análisis de ventanas** | Detecta las horas menos congestionadas y las escribe en `optimal_windows.json` |
+| **Análisis de ventanas** | Detecta las horas de mayor congestión (ventanas de alta carga Wi-Fi) y las escribe en `optimal_windows.json` |
 | **Configuración por `.env`** | Credenciales y parámetros fuera del código fuente |
 
 ---

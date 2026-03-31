@@ -125,6 +125,12 @@ def main() -> None:
     if monitor:
         interval = _get_int_arg(args, "--interval", default=30)
         duration = _get_int_arg(args, "--duration", default=None)
+        if interval <= 0:
+            log.error("--interval must be a positive integer (got %d).", interval)
+            sys.exit(1)
+        if duration is not None and duration < 0:
+            log.error("--duration must be >= 0 (got %d).", duration)
+            sys.exit(1)
         run_monitor(interval_seconds=interval, duration_seconds=duration)
         return
 
@@ -178,7 +184,7 @@ def main() -> None:
     else:
         log.info(
             "Daemon mode started. Scan interval: %d s. Ctrl+C to stop. "
-            "Flags: --once | --dry-run | --inspect | --monitor",
+            "Flags: --once | --dry-run | --inspect | --analyze",
             SCAN_INTERVAL_SECONDS,
         )
         while True:
