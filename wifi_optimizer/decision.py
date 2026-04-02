@@ -20,8 +20,10 @@ CHANNELS_5_ALL: list[int] = CHANNELS_5_PREFERRED + [
     52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144
 ]
 
-# Hysteresis: only switch if the new channel is at least this much better (relative)
-HYSTERESIS_THRESHOLD: float = 0.20
+# Hysteresis: only switch if the new channel is at least this much better (relative).
+# Default 40% — only worth interrupting the radio for a dramatic improvement.
+# Configurable via HYSTERESIS_THRESHOLD in .env (passed in by main.py).
+HYSTERESIS_THRESHOLD: float = 0.40
 
 
 # ---------------------------------------------------------------------------
@@ -72,12 +74,14 @@ def best_channel(
     networks: list[dict[str, Any]],
     band: str,
     current_channel: int | None,
+    *,
+    hysteresis_threshold: float = HYSTERESIS_THRESHOLD,
 ) -> tuple[int, bool]:
     """
     Returns (optimal_channel, should_change).
 
     should_change is True only when the improvement over the current channel
-    exceeds HYSTERESIS_THRESHOLD, avoiding unnecessary radio restarts.
+    exceeds hysteresis_threshold, avoiding unnecessary radio restarts.
     """
     candidates = CHANNELS_24 if band == "2.4" else CHANNELS_5_PREFERRED
     scores = compute_congestion_scores(networks, candidates)
@@ -97,13 +101,15 @@ def best_channel(
         (current_score - optimal_score) / abs(current_score)
         if current_score != 0 else 0.0
     )
-    should_change = (optimal != current_channel) and (improvement > HYSTERESIS_THRESHOLD)
+    should_change = (optimal != current_channel) and (improvement > hysteresis_threshold)
 
     log.info(
-        "%s GHz — current: ch%s (%.1f), optimal: ch%s (%.1f), improvement: %.1f%% → %s",
+        "%s GHz — current: ch%s (%.1f), optimal: ch%s (%.1f), "
+        "improvement: %.1f%% (threshold %.0f%%) → %s",
         band, current_channel, current_score,
         optimal, optimal_score,
         improvement * 100,
+        hysteresis_threshold * 100,
         "CHANGE" if should_change else "keep",
     )
     return optimal, should_change

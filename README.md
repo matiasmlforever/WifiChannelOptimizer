@@ -26,6 +26,8 @@ Escanea el espectro de RF del entorno, selecciona el canal con menor congestión
 | **Monitoreo gaming-aware** | Mide **RTT al gateway + jitter** antes y después de cada cambio |
 | **Reversión automática** | Revierte en 5 min si el jitter o el ping al gateway empeoran |
 | **Modo daemon** | Escaneo continuo cada 5 minutos |
+| **Modo monitor RF** | Registra snapshots del entorno Wi-Fi en SQLite para análisis de tendencias |
+| **Análisis de ventanas** | Detecta las horas de mayor congestión (ventanas de alta carga Wi-Fi) y las escribe en `optimal_windows.json` |
 | **Configuración por `.env`** | Credenciales y parámetros fuera del código fuente |
 
 ---
@@ -115,11 +117,24 @@ ROUTER_PASS=TU_CONTRASEÑA_DEL_ROUTER
 ## 🚀 Uso
 
 ```bash
-# Ejecutar una vez (escanear + decidir + aplicar)
-python main.py --once
+# ── Flujo recomendado de 3 pasos ──────────────────────────────────────────
 
-# Modo daemon — re-escanea cada 5 minutos (por defecto)
-python main.py
+# Paso 1 — Acumular datos del entorno RF (sin tocar el router)
+python main.py --monitor --interval 30          # indefinido
+python main.py --monitor --interval 30 --duration 86400  # 24 horas
+
+# Paso 2 — Analizar y generar ventanas óptimas
+python main.py --analyze                        # UTC-3 (Chile), top 8 horas
+python main.py --analyze --tz-offset -3 --top-n 6  # personalizado
+
+# Paso 3 — Ejecutar el optimizer (respetará optimal_windows.json si existe)
+python main.py                                  # daemon
+python main.py --once                           # una vez
+
+# ── Otros modos ───────────────────────────────────────────────────────────
+
+# Sin restricción de ventana: borrar el archivo generado
+# del optimal_windows.json
 
 # Dry run — ciclo completo sin tocar el router
 python main.py --once --dry-run
@@ -136,10 +151,60 @@ python main.py --inspect
 | `--once` | Un ciclo de optimización y termina |
 | `--dry-run` | Ciclo completo (escaneo + score + ping) pero **sin cambios en el router** |
 | `--inspect` | Abre Chromium visible + guarda archivos HTML de diagnóstico |
+| `--monitor` | Modo observatorio — registra snapshots RF en `wifi_monitor.db` |
+| `--interval N` | (con `--monitor`) Segundos entre scans. Default: `30` |
+| `--duration N` | (con `--monitor`) Detener tras N segundos. Default: ilimitado |
+| `--analyze` | Lee `wifi_monitor.db` y escribe las ventanas óptimas en `optimal_windows.json` |
+| `--tz-offset N` | (con `--analyze`) Offset UTC en horas. Default: `-3` (Chile) |
+| `--top-n N` | (con `--analyze`) Cantidad de horas óptimas a incluir. Default: `8` |
 
 ---
 
-## 🔧 Referencia de configuración (`.env`)
+## 🧠 Filosofía de diseño del optimizador
+
+Escanear frecuentemente y cambiar de canal con moderación no es una limitación — es una decisión de diseño deliberada basada en tres principios:
+
+### 1. Protección de la NVRAM del router
+
+Cada cambio de canal escribe en la **memoria flash** del router (NVRAM). Aunque los chips modernos soportan cientos de miles de ciclos de escritura, no tiene sentido desgastarlos innecesariamente.
+
+Con `CHANGE_COOLDOWN_SECONDS=3600`, en el peor escenario posible (un entorno RF que cambia constantemente durante las 24 horas), el router recibe **máximo 24 escrituras por día**. Eso es prácticamente nada — tu router vivirá muchos años sin problemas de memoria.
+
+El escaneo con `netsh`, en cambio, ocurre cada `SCAN_INTERVAL_SECONDS` y **no toca el router** — solo lee el espectro RF desde tu PC.
+
+### 2. Evitar el *flapping* (oscilación de canal)
+
+En redes, el **flapping** ocurre cuando un sistema salta del canal A al B, y luego vuelve al A casi de inmediato porque las condiciones fluctuaron levemente.
+
+```
+sin cooldown:  ch6 → ch11 → ch6 → ch11 → ch6  (cada 5 min)
+con cooldown:  ch6 ────────────────────── ch11  (solo si la mejora persiste 1h)
+```
+
+El cooldown de 1 hora le da tiempo al entorno para **estabilizarse**. Si el canal óptimo sigue siendo diferente al cabo de una hora, es porque hay una tendencia real de interferencia — no un ruido pasajero como alguien usando un dispositivo Bluetooth cerca o un microondas encendiéndose.
+
+El umbral del 40% (`HYSTERESIS_THRESHOLD`) refuerza esto: no basta con que otro canal sea *un poco* mejor, tiene que ser *dramáticamente* mejor para justificar el corte.
+
+### 3. Predictibilidad para el usuario
+
+Desde la perspectiva de quien usa la conexión, hay una diferencia enorme entre:
+
+- ❌ Cortes aleatorios de ~5 s cada 5–10 minutos (impredecible, arruina partidas)
+- ✅ Un corte de ~5 s **máximo una vez por hora** (manejable, esperable)
+
+Con la configuración por defecto, en el peor caso pierdes conexión **10 segundos, una vez por hora**. En la práctica, los canales cambian mucho menos seguido porque el entorno RF tiende a ser estable durante horas.
+
+### Resumen de la separación scan / change
+
+| Variable | Qué controla | Impacto |
+|---|---|---|
+| `SCAN_INTERVAL_SECONDS` | Frecuencia del escaneo RF | Solo CPU local, cero impacto en el router |
+| `CHANGE_COOLDOWN_SECONDS` | Frecuencia máxima de cambios al router | Protege NVRAM, evita flapping, da predictibilidad |
+| `HYSTERESIS_THRESHOLD` | Magnitud mínima de mejora para actuar | Filtra ruido y fluctuaciones momentáneas |
+
+---
+
+
 
 | Variable | Default | Descripción |
 |---|---|---|
@@ -147,11 +212,14 @@ python main.py --inspect
 | `ROUTER_USER` | `admin` | Usuario administrador |
 | `ROUTER_PASS` | `admin` | Contraseña administrador |
 | `ROUTER_DRIVER` | `huawei_hg8145x6` | Driver de automatización a usar (ver [Agregar un router](#-agregar-soporte-para-otro-router)) |
-| `SCAN_INTERVAL_SECONDS` | `300` | Segundos entre escaneos en modo daemon |
+| `SCAN_INTERVAL_SECONDS` | `300` | Segundos entre escaneos RF en modo daemon. Barato — solo usa `netsh`, sin contacto con el router. |
+| `CHANGE_COOLDOWN_SECONDS` | `3600` | Tiempo mínimo entre cambios de canal al router (segundos). El escaneo sigue ocurriendo pero no se aplica ningún cambio hasta que expire este cooldown. Previene golpear el router repetidamente. |
+| `HYSTERESIS_THRESHOLD` | `0.40` | Mejora relativa mínima para aplicar un cambio (0.40 = 40%). Solo se interrumpe la radio si el nuevo canal es dramáticamente mejor. |
 | `TRIAL_PERIOD_SECONDS` | `300` | Segundos de espera tras un cambio de canal antes de evaluar la calidad. 5 min es suficiente para estabilizarse sin arruinar una partida. |
 | `PING_DEGRADATION_MS` | `20` | Aumento de RTT al gateway (ms) que activa una reversión. 20 ms es perceptible en gaming competitivo. |
 | `JITTER_DEGRADATION_MS` | `15` | Aumento de jitter (ms) que activa una reversión. 15 ms extra causa rubber-banding en la mayoría de los juegos. |
-| `SPEED_DEGRADATION_PCT` | `0.40` | Caída de velocidad de descarga que activa una reversión (señal secundaria, no relevante para gaming). |
+| `BASELINE_GOOD_PING_MS` | `15` | Si el ping al gateway está por debajo de este valor **y** el jitter también está bien, la conexión ya es buena — no hay nada que mejorar. El optimizer se saltea el ciclo. Evita cambios innecesarios cuando la señal ya es óptima. |
+| `BASELINE_GOOD_JITTER_MS` | `5` | Umbral de jitter para la guardia de baseline. Ambas condiciones (ping Y jitter) deben cumplirse para saltearse. |
 
 ---
 
@@ -203,9 +271,12 @@ WifiChannelOptimizer/
 │   ├── decision.py                # Fase 2: scoring de congestión, histéresis, selección de canal
 │   ├── quality.py                 # Métricas gaming: RTT al gateway, jitter, velocidad
 │   ├── optimizer.py               # Ciclo principal: orquesta las 3 fases + driver del router
+│   ├── monitor.py                 # Modo observatorio: registra snapshots RF en SQLite
+│   ├── analyzer.py                # Análisis de ventanas: lee DB, escribe optimal_windows.json
 │   └── routers/
 │       ├── base.py                # BaseRouter ABC — contrato que todo driver debe implementar
 │       └── huawei_hg8145x6.py    # Driver concreto para Huawei HG8145X6 (Entel, Chile)
+├── analyze_windows.py             # Wrapper standalone para --analyze
 ├── .env.example                   # Plantilla de configuración — copiar a .env y completar
 ├── .env                           # Credenciales locales (ignorado por git)
 ├── pyproject.toml                 # Metadatos del proyecto y dependencias
@@ -213,8 +284,209 @@ WifiChannelOptimizer/
 ├── .gitignore
 ├── README.md                      # Este archivo (Español)
 ├── README.us.md                   # English version
-└── wifi_optimizer.log             # Log de ejecución (ignorado por git)
+├── wifi_optimizer.log             # Log de ejecución (ignorado por git)
+├── wifi_monitor.db                # Base de datos del monitor RF (ignorado por git)
+└── optimal_windows.json           # Ventanas horarias óptimas generadas por --analyze (ignorado por git)
 ```
+
+---
+
+## 🔄 Flujo completo: monitor → analizar → optimizar
+
+Este es el flujo recomendado para que el optimizer actúe **solo cuando tiene sentido hacerlo**.
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌──────────────────────┐
+│  --monitor      │────▶│  --analyze       │────▶│  (daemon / --once)   │
+│                 │     │                  │     │                      │
+│  wifi_monitor   │     │  identifica las  │     │  Step 0: ¿estamos    │
+│  .db (SQLite)   │     │  horas de MAYOR  │     │  en hora de alta     │
+│                 │     │  congestión →    │     │  congestión? Si no   │
+│                 │     │  optimal_windows │     │  → skip              │
+│                 │     │  .json           │     │  Step 2.5: ¿baseline │
+│                 │     │                  │     │  ya es bueno? → skip │
+└─────────────────┘     └──────────────────┘     └──────────────────────┘
+```
+
+> **¿Por qué actuar en horas de ALTA congestión?**
+> Cuando hay mucha interferencia en el canal actual, cambiar a uno menos poblado
+> produce una mejora real y medible. En horas tranquilas la conexión ya está bien
+> — cambiar de canal ahí es innecesario y puede empeorar lo que funciona.
+> Esto está validado empíricamente: los 3 reverts del log ocurrieron exactamente
+> en ciclos donde el baseline previo ya era bueno (ping < 30 ms, jitter < 26 ms).
+
+### Paso 1 — Acumular datos (24–48 h mínimo recomendado)
+
+```bash
+python main.py --monitor --interval 30
+```
+
+Cuantos más días de datos, más representativo el análisis. Sin datos de fines de semana o días laborales no hay un patrón completo.
+
+### Paso 2 — Analizar y generar ventanas
+
+```bash
+python main.py --analyze --tz-offset -3 --top-n 8
+```
+
+Genera `optimal_windows.json` con las **8 horas más congestionadas** del día. Son las horas donde hay más interferencia de vecinos — y por lo tanto más que ganar al cambiar a un canal libre.
+
+### Paso 3 — Ejecutar el optimizer
+
+```bash
+python main.py          # daemon — escanea siempre, actúa solo en ventanas de alta congestión
+```
+
+El optimizer aplica dos filtros antes de tocar el router:
+
+```
+Step 0:   ¿Estamos en una hora de alta congestión? (según optimal_windows.json)
+          Si no → skip. La conexión probablemente está bien.
+
+Step 2.5: ¿El baseline actual es ping ≤ 15 ms Y jitter ≤ 5 ms?
+          Si sí → skip. La conexión ya es buena, no hay nada que mejorar.
+
+Si pasa ambos filtros → evalúa canales y aplica si la mejora RF ≥ 40%.
+```
+
+```
+[INFO] Within optimal window (03:00 ✅). Proceeding with cycle.
+[INFO] Wi-Fi quality → gateway ping: 45.0 ms  jitter: 28.0 ms  → PROCEDE
+[INFO] 2.4 GHz — improvement: 91.9% (threshold 40%) → CHANGE
+
+[INFO] Within optimal window (03:00 ✅). Proceeding with cycle.
+[INFO] Wi-Fi quality → gateway ping: 4.0 ms  jitter: 1.6 ms
+[INFO] Baseline already good (ping 4.0 ms ≤ 15 ms, jitter 1.6 ms ≤ 5 ms). Skipping.
+```
+
+### Desactivar la restricción de ventana
+
+```bash
+del optimal_windows.json    # Windows
+rm optimal_windows.json     # macOS/Linux
+```
+
+Sin el archivo, el optimizer actúa en cualquier hora (comportamiento original).
+
+---
+
+## 📡 Modo monitor RF
+
+El modo monitor es completamente independiente del optimizador — **no toca el router, no requiere credenciales, no hace ningún cambio**. Solo escanea y registra.
+
+### Cuándo usarlo
+
+- Para **entender el entorno RF** antes de habilitar el optimizador
+- Para detectar **patrones horarios** de congestión (¿los vecinos saturan el canal 6 de noche?)
+- Para **validar** que un cambio de canal manual o automático tuvo efecto real
+- Para tener **evidencia histórica** ante problemas de conectividad
+
+### Base de datos SQLite (`wifi_monitor.db`)
+
+Tabla `snapshots`:
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `id` | INTEGER | PK autoincremental |
+| `ts` | TEXT | Timestamp ISO-8601 UTC |
+| `ssid` | TEXT | Nombre de la red |
+| `bssid` | TEXT | MAC del punto de acceso |
+| `channel` | INTEGER | Canal Wi-Fi |
+| `band` | TEXT | `'2.4'` o `'5'` |
+| `signal_pct` | INTEGER | Señal en % (valor crudo de netsh) |
+| `signal_dbm` | REAL | Señal en dBm (`pct/2 - 100`) |
+
+### Consultas de ejemplo
+
+```python
+import sqlite3
+import pandas as pd
+
+con = sqlite3.connect("wifi_monitor.db")
+df  = pd.read_sql("SELECT * FROM snapshots", con, parse_dates=["ts"])
+
+# Congestión promedio por canal
+df.groupby(["channel", "band"])["signal_dbm"].mean()
+
+# Evolución de señal de una red específica en el tiempo
+df[df["ssid"] == "MiVecino"].set_index("ts")["signal_dbm"].plot()
+
+# Hora del día con mayor cantidad de redes activas
+df["hour"] = df["ts"].dt.hour
+df.groupby("hour")["bssid"].nunique().plot(kind="bar", title="Redes únicas por hora")
+```
+
+```sql
+-- Top 5 canales más congestionados (promedio dBm)
+SELECT channel, band, COUNT(*) as scans, AVG(signal_dbm) as avg_dbm
+FROM snapshots
+GROUP BY channel, band
+ORDER BY avg_dbm ASC
+LIMIT 5;
+```
+
+```sql
+-- Redes únicas activas por hora del día
+-- Equivalente SQL de: df.groupby("hour")["bssid"].nunique()
+SELECT
+    CAST(strftime('%H', ts) AS INTEGER)  AS hour,
+    COUNT(DISTINCT bssid)                AS unique_networks
+FROM snapshots
+GROUP BY hour
+ORDER BY hour;
+```
+
+```sql
+-- ─────────────────────────────────────────────────────────────────
+-- Ventanas horarias óptimas para ejecutar el optimizador
+-- (hora local Chile = UTC-3, ajustar TZ_OFFSET según tu zona)
+-- Score combinado: suma de dBm en 2.4 GHz + 5 GHz por hora
+-- MÁS negativo = más congestionado = mejor momento para actuar
+-- (hay interferencia real → hay canal libre al que escapar)
+-- ─────────────────────────────────────────────────────────────────
+WITH tz_offset AS (SELECT -3 AS offset),   -- Chile (UTC-3)
+
+congestion_by_hour AS (
+    SELECT
+        (CAST(strftime('%H', ts) AS INTEGER) + (SELECT offset FROM tz_offset) + 24) % 24
+                                                        AS local_hour,
+        band,
+        SUM(signal_dbm)                                 AS band_score
+    FROM snapshots
+    GROUP BY local_hour, band
+),
+
+combined AS (
+    SELECT
+        local_hour,
+        SUM(band_score)                                 AS combined_score,
+        SUM(CASE WHEN band = '2.4' THEN band_score END) AS score_24,
+        SUM(CASE WHEN band = '5'   THEN band_score END) AS score_5
+    FROM congestion_by_hour
+    GROUP BY local_hour
+)
+
+SELECT
+    local_hour                          AS hora,
+    ROUND(combined_score, 1)            AS score_combinado,
+    ROUND(score_24, 1)                  AS score_24ghz,
+    ROUND(score_5,  1)                  AS score_5ghz,
+    RANK() OVER (ORDER BY combined_score ASC) AS ranking  -- más negativo = rank 1
+FROM combined
+ORDER BY ranking;
+```
+
+> **Resultado con los datos acumulados (Chile):**
+>
+> | Rank | Hora | Observación |
+> |---|---|---|
+> | 🥇 1 | **02:00** | Mayor congestión del día — mejor ventana para actuar |
+> | 🥈 2 | **04:00** | Segunda más congestionada |
+> | 🥉 3 | **03:00** | Tercera más congestionada |
+> | — | 12:00–21:00 | **Horas tranquilas** — conexión ya está bien, no cambiar |
+>
+> La franja **02:00–10:00 hora Chile** concentra la mayor congestión RF.
+> Son las horas donde cambiar a un canal menos poblado produce una mejora real.
 
 ---
 

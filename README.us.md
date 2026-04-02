@@ -26,6 +26,8 @@ Scans the surrounding RF spectrum, selects the least-congested channel for both 
 | **Gaming-aware quality monitoring** | Measures **gateway RTT + jitter** before and after every change |
 | **Auto-revert** | Reverts within 5 min if jitter or gateway ping degrade |
 | **Daemon mode** | Runs continuously, re-scanning every 5 minutes |
+| **RF Monitor mode** | Records Wi-Fi environment snapshots to SQLite for trend analysis |
+| **Window analysis** | Detects most-congested hours (high-interference windows) and writes them to `optimal_windows.json` |
 | **`.env` config** | All credentials and tuning parameters live outside the source code |
 
 ---
@@ -115,11 +117,24 @@ ROUTER_PASS=YOUR_ROUTER_PASSWORD
 ## 🚀 Usage
 
 ```bash
-# Run once (scan + decide + apply)
-python main.py --once
+# ── Recommended 3-step flow ───────────────────────────────────────────────
 
-# Daemon mode — re-scans every 5 minutes (default)
-python main.py
+# Step 1 — Accumulate RF environment data (no router contact)
+python main.py --monitor --interval 30          # unlimited
+python main.py --monitor --interval 30 --duration 86400  # 24 hours
+
+# Step 2 — Analyse and generate optimal windows
+python main.py --analyze                        # UTC-3 (Chile), top 8 hours
+python main.py --analyze --tz-offset -3 --top-n 6  # customised
+
+# Step 3 — Run the optimizer (respects optimal_windows.json if present)
+python main.py                                  # daemon
+python main.py --once                           # single shot
+
+# ── Other modes ───────────────────────────────────────────────────────────
+
+# Disable window restriction: delete the generated file
+# del optimal_windows.json
 
 # Dry run — full cycle without touching the router
 python main.py --once --dry-run
@@ -136,10 +151,60 @@ python main.py --inspect
 | `--once` | Single optimization cycle and exit |
 | `--dry-run` | Full cycle (scan + score + ping) but **no router changes** |
 | `--inspect` | Opens Chromium in headed mode + dumps diagnostic HTML files |
+| `--monitor` | Observatory mode — records RF snapshots to `wifi_monitor.db` |
+| `--interval N` | (with `--monitor`) Seconds between scans. Default: `30` |
+| `--duration N` | (with `--monitor`) Stop after N seconds. Default: unlimited |
+| `--analyze` | Reads `wifi_monitor.db` and writes optimal windows to `optimal_windows.json` |
+| `--tz-offset N` | (with `--analyze`) UTC offset in hours. Default: `-3` (Chile) |
+| `--top-n N` | (with `--analyze`) Number of optimal hours to include. Default: `8` |
 
 ---
 
-## 🔧 Configuration reference (`.env`)
+## 🧠 Optimizer design philosophy
+
+Scanning frequently and changing channels conservatively is not a limitation — it is a deliberate design decision based on three principles:
+
+### 1. NVRAM protection
+
+Every channel change writes to the router's **flash memory** (NVRAM). Although modern chips support hundreds of thousands of write cycles, there is no reason to wear them out unnecessarily.
+
+With `CHANGE_COOLDOWN_SECONDS=3600`, in the absolute worst case (an RF environment that shifts constantly for 24 hours straight), the router receives **at most 24 writes per day**. That is essentially nothing — your router will last many years without any memory issues.
+
+The `netsh` scan that happens every `SCAN_INTERVAL_SECONDS`, on the other hand, **never contacts the router** — it only reads the RF spectrum from your PC.
+
+### 2. Avoiding channel flapping
+
+In networking, **flapping** happens when a system jumps from channel A to B, then back to A almost immediately because conditions fluctuated slightly.
+
+```
+without cooldown:  ch6 → ch11 → ch6 → ch11 → ch6  (every 5 min)
+with cooldown:     ch6 ────────────────────── ch11  (only if the improvement persists for 1h)
+```
+
+The 1-hour cooldown gives the environment time to **stabilise**. If the optimal channel is still different after an hour, it reflects a genuine interference trend — not a transient spike caused by someone using a Bluetooth device nearby or a microwave turning on.
+
+The 40% hysteresis threshold (`HYSTERESIS_THRESHOLD`) reinforces this: another channel must be *dramatically* better, not just *marginally* better, to justify interrupting the radio.
+
+### 3. Predictability for the user
+
+From the perspective of someone using the connection, there is a big difference between:
+
+- ❌ Random ~5 s drops every 5–10 minutes (unpredictable, ruins matches)
+- ✅ A ~5 s drop **at most once per hour** (manageable, expected)
+
+With the default configuration, in the worst case you lose connectivity for **10 seconds, once per hour**. In practice, channels change far less frequently because the RF environment tends to be stable for hours at a time.
+
+### Scan / change separation at a glance
+
+| Variable | What it controls | Impact |
+|---|---|---|
+| `SCAN_INTERVAL_SECONDS` | RF scan frequency | Local CPU only — zero impact on the router |
+| `CHANGE_COOLDOWN_SECONDS` | Maximum rate of router changes | Protects NVRAM, prevents flapping, gives predictability |
+| `HYSTERESIS_THRESHOLD` | Minimum improvement magnitude to act | Filters noise and momentary fluctuations |
+
+---
+
+
 
 | Variable | Default | Description |
 |---|---|---|
@@ -147,11 +212,15 @@ python main.py --inspect
 | `ROUTER_USER` | `admin` | Admin username |
 | `ROUTER_PASS` | `admin` | Admin password |
 | `ROUTER_DRIVER` | `huawei_hg8145x6` | Router automation driver key (see [Adding a new router](#-adding-a-new-router-model)) |
-| `SCAN_INTERVAL_SECONDS` | `300` | Seconds between daemon scans |
+| `SCAN_INTERVAL_SECONDS` | `300` | Seconds between RF scans in daemon mode. Cheap — only runs `netsh`, no router contact. |
+| `CHANGE_COOLDOWN_SECONDS` | `3600` | Minimum time between actual router channel changes (seconds). Scanning still happens every `SCAN_INTERVAL_SECONDS` but no change is applied until this cooldown expires. Prevents hammering the router. |
+| `HYSTERESIS_THRESHOLD` | `0.40` | Minimum relative improvement required to trigger a change (0.40 = 40%). Only interrupts the radio for a dramatic gain. |
 | `TRIAL_PERIOD_SECONDS` | `300` | Seconds after a channel change before quality is evaluated. 5 min is enough to stabilize without ruining a full match. |
 | `PING_DEGRADATION_MS` | `20` | Gateway RTT increase (ms) that triggers a revert. 20 ms is perceptible in competitive gaming. |
 | `JITTER_DEGRADATION_MS` | `15` | Jitter increase (ms) that triggers a revert. 15 ms of extra jitter causes rubber-banding in most games. |
 | `SPEED_DEGRADATION_PCT` | `0.40` | Download speed drop fraction that triggers a revert (secondary, non-gaming signal). |
+| `BASELINE_GOOD_PING_MS` | `15` | If gateway ping is below this value **and** jitter is also good, the connection is already healthy — optimizer skips the cycle. Prevents unnecessary changes when the signal is already optimal. |
+| `BASELINE_GOOD_JITTER_MS` | `5` | Jitter threshold for the baseline guard. Both conditions (ping AND jitter) must be met to skip. |
 
 ---
 
@@ -203,6 +272,7 @@ WifiChannelOptimizer/
 │   ├── decision.py                # Phase 2: congestion scoring, hysteresis, channel selection
 │   ├── quality.py                 # Gaming metrics: gateway RTT, jitter, download speed
 │   ├── optimizer.py               # Core cycle: ties scanner + decision + quality + router together
+│   ├── monitor.py                 # Observatory mode: records RF snapshots to SQLite
 │   └── routers/
 │       ├── base.py                # BaseRouter ABC — the contract every driver must implement
 │       └── huawei_hg8145x6.py    # Concrete driver for Huawei HG8145X6 (Entel, Chile)
@@ -213,8 +283,130 @@ WifiChannelOptimizer/
 ├── .gitignore
 ├── README.md                      # Versión en Español (primary)
 ├── README.us.md                   # This file (English)
-└── wifi_optimizer.log             # Runtime log (git-ignored)
+├── wifi_optimizer.log             # Runtime log (git-ignored)
+└── wifi_monitor.db                # RF monitor database (git-ignored)
 ```
+
+---
+
+## 📡 RF Monitor mode
+
+The monitor mode is completely independent from the optimizer — **it does not touch the router, requires no credentials, and makes no changes**. It only scans and records.
+
+### When to use it
+
+- To **understand your RF environment** before enabling the optimizer
+- To detect **time-of-day congestion patterns** (do neighbours saturate channel 6 at night?)
+- To **validate** that a manual or automatic channel change had a real effect
+- To keep **historical evidence** when troubleshooting connectivity issues
+
+### SQLite database (`wifi_monitor.db`)
+
+Table `snapshots`:
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER | Auto-increment PK |
+| `ts` | TEXT | ISO-8601 UTC timestamp |
+| `ssid` | TEXT | Network name |
+| `bssid` | TEXT | Access point MAC address |
+| `channel` | INTEGER | Wi-Fi channel |
+| `band` | TEXT | `'2.4'` or `'5'` |
+| `signal_pct` | INTEGER | Signal in % (raw netsh value) |
+| `signal_dbm` | REAL | Signal in dBm (`pct/2 - 100`) |
+
+### Query examples
+
+```python
+import sqlite3
+import pandas as pd
+
+con = sqlite3.connect("wifi_monitor.db")
+df  = pd.read_sql("SELECT * FROM snapshots", con, parse_dates=["ts"])
+
+# Average congestion per channel
+df.groupby(["channel", "band"])["signal_dbm"].mean()
+
+# Signal strength of a specific network over time
+df[df["ssid"] == "MyNeighbour"].set_index("ts")["signal_dbm"].plot()
+
+# Hour of day with the most active networks
+df["hour"] = df["ts"].dt.hour
+df.groupby("hour")["bssid"].nunique().plot(kind="bar", title="Unique networks per hour")
+```
+
+```sql
+-- Top 5 most congested channels (average dBm)
+SELECT channel, band, COUNT(*) as scans, AVG(signal_dbm) as avg_dbm
+FROM snapshots
+GROUP BY channel, band
+ORDER BY avg_dbm ASC
+LIMIT 5;
+```
+
+```sql
+-- Unique active networks per hour of the day
+-- SQL equivalent of: df.groupby("hour")["bssid"].nunique()
+SELECT
+    CAST(strftime('%H', ts) AS INTEGER)  AS hour,
+    COUNT(DISTINCT bssid)                AS unique_networks
+FROM snapshots
+GROUP BY hour
+ORDER BY hour;
+```
+
+```sql
+-- ─────────────────────────────────────────────────────────────────
+-- Optimal hourly windows to run the optimizer
+-- (local time = UTC + TZ_OFFSET; adjust offset for your timezone)
+-- Combined score: sum of dBm across 2.4 GHz + 5 GHz per hour
+-- MORE negative = more congested = better time to act
+-- (real interference present → there is a cleaner channel to switch to)
+-- ─────────────────────────────────────────────────────────────────
+WITH tz_offset AS (SELECT -3 AS offset),   -- Chile (UTC-3); change as needed
+
+congestion_by_hour AS (
+    SELECT
+        (CAST(strftime('%H', ts) AS INTEGER) + (SELECT offset FROM tz_offset) + 24) % 24
+                                                        AS local_hour,
+        band,
+        SUM(signal_dbm)                                 AS band_score
+    FROM snapshots
+    GROUP BY local_hour, band
+),
+
+combined AS (
+    SELECT
+        local_hour,
+        SUM(band_score)                                 AS combined_score,
+        SUM(CASE WHEN band = '2.4' THEN band_score END) AS score_24,
+        SUM(CASE WHEN band = '5'   THEN band_score END) AS score_5
+    FROM congestion_by_hour
+    GROUP BY local_hour
+)
+
+SELECT
+    local_hour                          AS hour,
+    ROUND(combined_score, 1)            AS combined_score,
+    ROUND(score_24, 1)                  AS score_24ghz,
+    ROUND(score_5,  1)                  AS score_5ghz,
+    RANK() OVER (ORDER BY combined_score ASC) AS ranking  -- most negative = rank 1
+FROM combined
+ORDER BY ranking;
+```
+
+> **Results from accumulated data (Chile):**
+>
+> | Rank | Hour | Note |
+> |---|---|---|
+> | 🥇 1 | **02:00** | Highest congestion of the day — best window to act |
+> | 🥈 2 | **04:00** | Second most congested |
+> | 🥉 3 | **03:00** | Third most congested |
+> | — | 12:00–21:00 | **Quiet hours** — connection is already good, skip |
+>
+> The **02:00–10:00 Chile** window has the highest RF congestion.
+> Those are the hours where switching to a less-populated channel yields a real,
+> measurable improvement in ping and jitter.
 
 ---
 
