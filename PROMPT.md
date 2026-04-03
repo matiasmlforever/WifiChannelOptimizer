@@ -56,7 +56,9 @@ El sistema debe obtener datos del espectro radioeléctrico utilizando el comando
 ## 3. Phase 2: Decision Logic (Optimization)
 - **2.4 GHz Rules:** Solo se permiten los canales **1, 6 y 11** (Non-overlapping).
 - **5 GHz Rules:** Priorizar canales de banda baja (36-48) o alta (149-161), evitando canales DFS si la estabilidad es prioridad.
-- **Hysteresis:** El sistema solo debe solicitar un cambio de canal si la mejora de congestión es superior al **20%** respecto al canal actual, para evitar reinicios innecesarios de la radio.
+- **Hysteresis (modo normal):** El sistema solo debe solicitar un cambio de canal si la mejora de congestión es superior al **40%** respecto al canal actual, para evitar reinicios innecesarios de la radio.
+- **Emergency mode (fuera de ventanas óptimas):** solo evaluar cambios cuando exista degradación seria (ping o jitter altos), con histéresis más estricta (**50%**) y cooldown de **1 hora** para evitar flapping.
+- **Selector de perfil:** `GAMING_PROFILE=balanced|aggressive` permite ajustar rápidamente la sensibilidad de emergencia; cualquier `EMERGENCY_*` explícito en `.env` tiene prioridad sobre el perfil.
 
 ## 4. Phase 3: Router Automation (Playwright)
 **Target URL:** `http://192.168.100.1` (o IP asignada por el ISP).

@@ -19,7 +19,7 @@ Scans the surrounding RF spectrum, selects the least-congested channel for both 
 |---|---|
 | **RF Scanning** | Uses `netsh wlan show networks mode=bssid` (Windows native) |
 | **Congestion scoring** | Sum of dBm power across a channel **and its adjacent channels** |
-| **Smart decision** | Only changes if improvement is **> 20 %** (hysteresis) |
+| **Smart decision** | Only changes if improvement is **> 40 %** (normal) or **> 50 %** (emergency) |
 | **2.4 GHz rules** | Restricts candidates to non-overlapping channels **1, 6, 11** |
 | **5 GHz rules** | Prefers non-DFS channels (36–48, 149–161) for stability |
 | **Router automation** | Headless Chromium via Playwright — no manual interaction needed |
@@ -214,13 +214,32 @@ With the default configuration, in the worst case you lose connectivity for **10
 | `ROUTER_DRIVER` | `huawei_hg8145x6` | Router automation driver key (see [Adding a new router](#-adding-a-new-router-model)) |
 | `SCAN_INTERVAL_SECONDS` | `300` | Seconds between RF scans in daemon mode. Cheap — only runs `netsh`, no router contact. |
 | `CHANGE_COOLDOWN_SECONDS` | `3600` | Minimum time between actual router channel changes (seconds). Scanning still happens every `SCAN_INTERVAL_SECONDS` but no change is applied until this cooldown expires. Prevents hammering the router. |
-| `HYSTERESIS_THRESHOLD` | `0.40` | Minimum relative improvement required to trigger a change (0.40 = 40%). Only interrupts the radio for a dramatic gain. |
+| `HYSTERESIS_THRESHOLD` | `0.40` | Minimum relative improvement required in normal mode (0.40 = 40%). |
 | `TRIAL_PERIOD_SECONDS` | `300` | Seconds after a channel change before quality is evaluated. 5 min is enough to stabilize without ruining a full match. |
 | `PING_DEGRADATION_MS` | `20` | Gateway RTT increase (ms) that triggers a revert. 20 ms is perceptible in competitive gaming. |
 | `JITTER_DEGRADATION_MS` | `15` | Jitter increase (ms) that triggers a revert. 15 ms of extra jitter causes rubber-banding in most games. |
 | `SPEED_DEGRADATION_PCT` | `0.40` | Download speed drop fraction that triggers a revert (secondary, non-gaming signal). |
 | `BASELINE_GOOD_PING_MS` | `15` | If gateway ping is below this value **and** jitter is also good, the connection is already healthy — optimizer skips the cycle. Prevents unnecessary changes when the signal is already optimal. |
 | `BASELINE_GOOD_JITTER_MS` | `5` | Jitter threshold for the baseline guard. Both conditions (ping AND jitter) must be met to skip. |
+| `GAMING_PROFILE` | `balanced` | Emergency profile outside optimal windows. `balanced` uses 40/20/0.50/3600 and `aggressive` uses 30/12/0.35/1800 (ping/jitter/hysteresis/cooldown). |
+| `EMERGENCY_PING_MS` | `40` | Outside optimal windows, only evaluate channel changes if gateway ping exceeds this value or jitter exceeds its emergency threshold. |
+| `EMERGENCY_JITTER_MS` | `20` | Jitter threshold that enables emergency actions outside optimal windows. |
+| `EMERGENCY_HYSTERESIS` | `0.50` | Minimum RF improvement in emergency mode (stricter than normal mode to avoid unnecessary match interruptions). |
+| `EMERGENCY_COOLDOWN_SECONDS` | `3600` | Cooldown between emergency changes (1 hour) to reduce flapping and repeated flash writes. |
+
+---
+
+## 🎯 Profile: Aggressive gaming (optional)
+
+If you usually play outside `optimal_windows.json` and want faster reaction, enable the aggressive profile with a single variable:
+
+```dotenv
+GAMING_PROFILE=aggressive
+```
+
+Expected effect: it reacts earlier to nighttime degradation, but accepts a higher chance of channel-change interruptions during long sessions.
+
+If you need fine tuning, explicit `EMERGENCY_*` values always override the profile.
 
 ---
 

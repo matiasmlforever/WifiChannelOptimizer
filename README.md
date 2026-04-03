@@ -19,7 +19,7 @@ Escanea el espectro de RF del entorno, selecciona el canal con menor congestión
 |---|---|
 | **Escaneo RF** | Usa `netsh wlan show networks mode=bssid` (nativo de Windows) |
 | **Puntaje de congestión** | Suma de potencia en dBm en el canal **y sus canales adyacentes** |
-| **Decisión inteligente** | Solo cambia si la mejora supera el **20 %** (histéresis) |
+| **Decisión inteligente** | Solo cambia si la mejora supera el **40 %** (normal) o **50 %** (emergencia) |
 | **Reglas 2.4 GHz** | Restringe candidatos a canales no solapados: **1, 6, 11** |
 | **Reglas 5 GHz** | Prefiere canales no-DFS (36–48, 149–161) para mayor estabilidad |
 | **Automatización del router** | Chromium headless vía Playwright — sin intervención manual |
@@ -214,12 +214,31 @@ Con la configuración por defecto, en el peor caso pierdes conexión **10 segund
 | `ROUTER_DRIVER` | `huawei_hg8145x6` | Driver de automatización a usar (ver [Agregar un router](#-agregar-soporte-para-otro-router)) |
 | `SCAN_INTERVAL_SECONDS` | `300` | Segundos entre escaneos RF en modo daemon. Barato — solo usa `netsh`, sin contacto con el router. |
 | `CHANGE_COOLDOWN_SECONDS` | `3600` | Tiempo mínimo entre cambios de canal al router (segundos). El escaneo sigue ocurriendo pero no se aplica ningún cambio hasta que expire este cooldown. Previene golpear el router repetidamente. |
-| `HYSTERESIS_THRESHOLD` | `0.40` | Mejora relativa mínima para aplicar un cambio (0.40 = 40%). Solo se interrumpe la radio si el nuevo canal es dramáticamente mejor. |
+| `HYSTERESIS_THRESHOLD` | `0.40` | Mejora relativa mínima para aplicar un cambio en modo normal (0.40 = 40%). |
 | `TRIAL_PERIOD_SECONDS` | `300` | Segundos de espera tras un cambio de canal antes de evaluar la calidad. 5 min es suficiente para estabilizarse sin arruinar una partida. |
 | `PING_DEGRADATION_MS` | `20` | Aumento de RTT al gateway (ms) que activa una reversión. 20 ms es perceptible en gaming competitivo. |
 | `JITTER_DEGRADATION_MS` | `15` | Aumento de jitter (ms) que activa una reversión. 15 ms extra causa rubber-banding en la mayoría de los juegos. |
 | `BASELINE_GOOD_PING_MS` | `15` | Si el ping al gateway está por debajo de este valor **y** el jitter también está bien, la conexión ya es buena — no hay nada que mejorar. El optimizer se saltea el ciclo. Evita cambios innecesarios cuando la señal ya es óptima. |
 | `BASELINE_GOOD_JITTER_MS` | `5` | Umbral de jitter para la guardia de baseline. Ambas condiciones (ping Y jitter) deben cumplirse para saltearse. |
+| `GAMING_PROFILE` | `balanced` | Perfil de emergencia fuera de ventanas. `balanced` usa 40/20/0.50/3600 y `aggressive` usa 30/12/0.35/1800 (ping/jitter/histeresis/cooldown). |
+| `EMERGENCY_PING_MS` | `40` | Fuera de ventanas óptimas, solo evalúa cambio si el ping al gateway supera este valor o si el jitter supera su umbral de emergencia. |
+| `EMERGENCY_JITTER_MS` | `20` | Umbral de jitter para habilitar acciones en modo emergencia durante horarios fuera de ventana. |
+| `EMERGENCY_HYSTERESIS` | `0.50` | Mejora RF mínima en modo emergencia (más estricta que normal para evitar cortes innecesarios en plena partida). |
+| `EMERGENCY_COOLDOWN_SECONDS` | `3600` | Cooldown entre cambios de emergencia (1 hora) para reducir flapping y escrituras repetidas. |
+
+---
+
+## 🎯 Perfil: Gaming agresivo (opcional)
+
+Si juegas en horarios fuera de `optimal_windows.json` y prefieres que el optimizer reaccione antes, activa el perfil agresivo con una sola variable:
+
+```dotenv
+GAMING_PROFILE=aggressive
+```
+
+Efecto esperado: actúa con más facilidad ante degradación nocturna, pero acepta más riesgo de cambios/cortes durante sesiones largas.
+
+Si quieres afinar manualmente, `EMERGENCY_*` siempre tiene prioridad sobre el perfil.
 
 ---
 
@@ -346,7 +365,9 @@ Step 0:   ¿Estamos en una hora de alta congestión? (según optimal_windows.jso
 Step 2.5: ¿El baseline actual es ping ≤ 15 ms Y jitter ≤ 5 ms?
           Si sí → skip. La conexión ya es buena, no hay nada que mejorar.
 
-Si pasa ambos filtros → evalúa canales y aplica si la mejora RF ≥ 40%.
+Si pasa ambos filtros → evalúa canales y aplica si la mejora RF ≥ 40% (modo normal).
+
+Fuera de `optimal_windows.json` entra en **modo emergencia**: solo actúa si hay degradación seria (ping > 40 ms o jitter > 20 ms), exige mejora RF ≥ 50% y respeta cooldown de 1 hora.
 ```
 
 ```

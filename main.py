@@ -44,6 +44,31 @@ ROUTER_URL  = os.getenv("ROUTER_URL",  "http://192.168.100.1")
 ROUTER_USER = os.getenv("ROUTER_USER", "admin")
 ROUTER_PASS = os.getenv("ROUTER_PASS", "admin")
 
+# Mini profile selector for emergency behavior outside optimal windows.
+# Explicit EMERGENCY_* env vars always override profile defaults.
+_PROFILE_DEFAULTS = {
+    "balanced": {
+        "ping_ms": 40,
+        "jitter_ms": 20,
+        "hysteresis": 0.50,
+        "cooldown_s": 3600,
+    },
+    "aggressive": {
+        "ping_ms": 30,
+        "jitter_ms": 12,
+        "hysteresis": 0.35,
+        "cooldown_s": 1800,
+    },
+}
+
+
+def _resolve_profile() -> tuple[str, dict[str, float | int]]:
+    raw = os.getenv("GAMING_PROFILE", "balanced").strip().lower()
+    if raw not in _PROFILE_DEFAULTS:
+        log.warning("Unknown GAMING_PROFILE '%s'; falling back to 'balanced'.", raw)
+        raw = "balanced"
+    return raw, _PROFILE_DEFAULTS[raw]
+
 SCAN_INTERVAL_SECONDS        = int(os.getenv("SCAN_INTERVAL_SECONDS",        "300"))
 CHANGE_COOLDOWN_SECONDS      = int(os.getenv("CHANGE_COOLDOWN_SECONDS",      "3600"))
 HYSTERESIS_THRESHOLD         = float(os.getenv("HYSTERESIS_THRESHOLD",       "0.40"))
@@ -53,10 +78,11 @@ JITTER_DEGRADATION_MS        = int(os.getenv("JITTER_DEGRADATION_MS",        "15
 SPEED_DEGRADATION_PCT        = float(os.getenv("SPEED_DEGRADATION_PCT",      "0.40"))
 BASELINE_GOOD_PING_MS        = int(os.getenv("BASELINE_GOOD_PING_MS",        "15"))
 BASELINE_GOOD_JITTER_MS      = int(os.getenv("BASELINE_GOOD_JITTER_MS",      "5"))
-EMERGENCY_PING_MS            = int(os.getenv("EMERGENCY_PING_MS",            "80"))
-EMERGENCY_JITTER_MS          = int(os.getenv("EMERGENCY_JITTER_MS",          "50"))
-EMERGENCY_HYSTERESIS         = float(os.getenv("EMERGENCY_HYSTERESIS",       "0.80"))
-EMERGENCY_COOLDOWN_SECONDS   = int(os.getenv("EMERGENCY_COOLDOWN_SECONDS",   "7200"))
+GAMING_PROFILE, _profile = _resolve_profile()
+EMERGENCY_PING_MS            = int(os.getenv("EMERGENCY_PING_MS",            str(_profile["ping_ms"])))
+EMERGENCY_JITTER_MS          = int(os.getenv("EMERGENCY_JITTER_MS",          str(_profile["jitter_ms"])))
+EMERGENCY_HYSTERESIS         = float(os.getenv("EMERGENCY_HYSTERESIS",       str(_profile["hysteresis"])))
+EMERGENCY_COOLDOWN_SECONDS   = int(os.getenv("EMERGENCY_COOLDOWN_SECONDS",   str(_profile["cooldown_s"])))
 
 # ---------------------------------------------------------------------------
 # Router driver registry
@@ -146,6 +172,15 @@ def main() -> None:
         log.info("DRY-RUN mode: router will NOT be modified.")
     if headed:
         log.info("INSPECT mode: Chromium will open in headed mode.")
+
+    log.info(
+        "Gaming profile: %s | Emergency thresholds → ping>%d ms, jitter>%.1f ms, hysteresis %.0f%%, cooldown %d min",
+        GAMING_PROFILE,
+        EMERGENCY_PING_MS,
+        EMERGENCY_JITTER_MS,
+        EMERGENCY_HYSTERESIS * 100,
+        EMERGENCY_COOLDOWN_SECONDS // 60,
+    )
 
     router = _build_router()
     log.info("Router driver: %s  (%s)", router.__class__.__name__, router.url)
