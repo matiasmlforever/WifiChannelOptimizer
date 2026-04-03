@@ -735,7 +735,7 @@ Si este script te ayudó a estabilizar tu conexión, bajar el ping o simplemente
 ### 🇨🇱 Para Chile (Webpay / Débito / Crédito)
 Puedes realizar una donación de monto abierto a través de **Flow**:
 
-[![Flow Pago](https://img.shields.io/badge/Donar_vía-Flow-00c0f3?style=for-the-badge&logo=opsgenie&logoColor=white)](https://www.flow.cl/btn.php?token=b7cbabd1861bcf3cbbb6bf9b8cf05af15cce8fc)
+[![Flow Pago](https://img.shields.io/badge/Donar_vía-Flow-00c0f3?style=for-the-badge&logo=opsgenie&logoColor=white)](https://www.flow.cl/btn.php?token=b7cbabd1861bcf3cbbb6bf9b8cf05af15cce8fc6)
 
 ### 🌎 Internacional (PayPal / Tarjeta de crédito)
 Apoya el desarrollo vía **Buy Me a Coffee**:

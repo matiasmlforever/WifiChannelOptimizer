@@ -660,7 +660,7 @@ If this script helped you stabilize your connection, lower your ping, or simply 
 ### 🇨🇱 For Chile (Webpay / Debit / Credit)
 You can make an open-amount donation via **Flow**:
 
-[![Flow Pago](https://img.shields.io/badge/Donate_via-Flow-00c0f3?style=for-the-badge&logo=opsgenie&logoColor=white)](https://www.flow.cl/btn.php?token=b7cbabd1861bcf3cbbb6bf9b8cf05af15cce8fc)
+[![Flow Pago](https://img.shields.io/badge/Donate_via-Flow-00c0f3?style=for-the-badge&logo=opsgenie&logoColor=white)](https://www.flow.cl/btn.php?token=b7cbabd1861bcf3cbbb6bf9b8cf05af15cce8fc6)
 
 ### 🌎 International (PayPal / Credit Card)
 Support the development via **Buy Me a Coffee**:
